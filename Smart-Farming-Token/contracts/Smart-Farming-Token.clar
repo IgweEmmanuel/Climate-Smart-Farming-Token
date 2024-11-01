@@ -115,3 +115,121 @@
     )
 )
 
+
+;; -----------------------------
+;; Farmer Registration
+;; -----------------------------
+;; Register a new farmer
+(define-public (register-farmer)
+    (let
+        ((farmer-data (map-get? farmers tx-sender)))
+        (asserts! (is-none farmer-data) ERR-ALREADY-REGISTERED)
+        (map-set farmers tx-sender {
+            registered: true,
+            total-score: u0,
+            last-claim: u0,
+            practices: (list)
+        })
+        (ok true)
+    )
+)
+
+;; -----------------------------
+;; Practice Verification
+;; -----------------------------
+;; Verify a sustainable farming practice
+(define-public (verify-practice (farmer principal) (practice-id uint))
+    (let
+        ((farmer-data (unwrap! (map-get? farmers farmer) ERR-NOT-REGISTERED))
+         (practice (unwrap! (map-get? practice-scores practice-id) ERR-INVALID-PRACTICE)))
+        (begin
+            (asserts! (is-verifier tx-sender) ERR-NOT-AUTHORIZED)
+            (asserts! (get active practice) ERR-INVALID-PRACTICE)
+            
+            ;; Update farmer's practices and score
+            (map-set farmers farmer
+                (merge farmer-data
+                    {
+                        practices: (unwrap! (as-max-len? 
+                            (append (get practices farmer-data) practice-id) u6) 
+                            ERR-NOT-AUTHORIZED),
+                        total-score: (+ (get total-score farmer-data) (get score practice))
+                    }
+                )
+            )
+            (ok true)
+        )
+    )
+)
+
+;; -----------------------------
+;; Token Rewards
+;; -----------------------------
+;; Claim token rewards based on sustainable practices
+(define-public (claim-rewards)
+    (let
+        ((farmer-data (unwrap! (map-get? farmers tx-sender) ERR-NOT-REGISTERED))
+         (current-block (unwrap-panic (get-block-info? time u0)))
+         (cooldown-passed (> (- current-block (get last-claim farmer-data)) CLAIM-COOLDOWN-PERIOD))
+         (reward-amount (* (get total-score farmer-data) TOKEN-REWARD-MULTIPLIER)))
+        (begin
+            (asserts! cooldown-passed ERR-COOLDOWN-ACTIVE)
+            
+            ;; Mint tokens based on score
+            (try! (mint-csft tx-sender reward-amount))
+            
+            ;; Update last claim time
+            (map-set farmers tx-sender
+                (merge farmer-data {last-claim: current-block}))
+            
+            (ok reward-amount)
+        )
+    )
+)
+
+;; -----------------------------
+;; Token Operations
+;; -----------------------------
+;; Mint tokens
+(define-private (mint-csft (recipient principal) (amount uint))
+    (ft-mint? csft amount recipient)
+)
+
+;; -----------------------------
+;; Test Helper Functions
+;; -----------------------------
+;; Initialize test principals
+(define-constant test-farmer ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5)
+(define-constant test-verifier ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG)
+
+;; Test initialization function
+(define-public (initialize-test)
+    (begin
+        ;; Add test verifier
+        (try! (add-verifier test-verifier))
+        ;; Initialize practices
+        (try! (initialize-practices))
+        ;; Register test farmer
+        (contract-call? 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.climate-smart-farming register-farmer)
+        (ok true)
+    )
+)
+
+;; -----------------------------
+;; Getter Functions
+;; -----------------------------
+;; Get farmer data
+(define-read-only (get-farmer-data (farmer principal))
+    (map-get? farmers farmer)
+)
+
+;; Get practice score details
+(define-read-only (get-practice-details (practice-id uint))
+    (map-get? practice-scores practice-id)
+)
+
+;; Check if address is verifier
+(define-read-only (is-verifier? (address principal))
+    (default-to false (map-get? verifiers address))
+)
+
